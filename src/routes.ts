@@ -48,6 +48,10 @@ interface BackendResult {
   body: unknown
 }
 
+interface PublicRequestMeta {
+  baseUrl?: string
+}
+
 const backendRoutes: Record<string, BackendRoute> = {
   1: { method: 'GET', path: '/api/v1/user/notice/fetch' },
   2: { method: 'GET', path: '/api/v1/user/info' },
@@ -141,6 +145,54 @@ function parseMaybeJson(text: string, contentType: string) {
   }
   catch {
     return text
+  }
+}
+
+function getPublicBaseUrl(ctx: Koa.Context) {
+  const origin = ctx.get('Origin')
+  if (origin) {
+    try {
+      return new URL(origin).origin
+    }
+    catch {
+      return undefined
+    }
+  }
+
+  const forwardedProto = ctx.get('X-Forwarded-Proto')
+  const forwardedHost = ctx.get('X-Forwarded-Host')
+  if (forwardedHost) {
+    return `${forwardedProto || ctx.protocol}://${forwardedHost}`
+  }
+
+  const host = ctx.get('Host')
+  if (!host) {
+    return undefined
+  }
+
+  return `${ctx.protocol}://${host}`
+}
+
+function rewriteAppUrl(body: unknown, publicBaseUrl?: string) {
+  if (!publicBaseUrl || !body || typeof body !== 'object') {
+    return body
+  }
+
+  if (!('data' in body)) {
+    return body
+  }
+
+  const data = (body as { data?: unknown }).data
+  if (!data || typeof data !== 'object' || !('app_url' in data)) {
+    return body
+  }
+
+  return {
+    ...(body as Record<string, unknown>),
+    data: {
+      ...(data as Record<string, unknown>),
+      app_url: publicBaseUrl,
+    },
   }
 }
 
@@ -319,7 +371,7 @@ async function quickOrder(request: RpcRequest): Promise<BackendResult> {
   }
 }
 
-async function dispatchRpc(request: RpcRequest): Promise<BackendResult> {
+async function dispatchRpc(request: RpcRequest, meta: PublicRequestMeta): Promise<BackendResult> {
   const op = String(request.op ?? '')
 
   switch (op) {
@@ -355,7 +407,7 @@ async function dispatchRpc(request: RpcRequest): Promise<BackendResult> {
       }
     }
 
-    return proxyToBackend({
+    const result = await proxyToBackend({
       method: request.method || route.method,
       path: route.path,
       query: request.query,
@@ -363,6 +415,15 @@ async function dispatchRpc(request: RpcRequest): Promise<BackendResult> {
       headers: request.headers,
       token: request.token,
     })
+
+    if (op === '3' || op === '4') {
+      return {
+        ...result,
+        body: rewriteAppUrl(result.body, meta.baseUrl),
+      }
+    }
+
+    return result
   }
 
   if (rpcProxyEnabled && request.path) {
@@ -406,7 +467,9 @@ router.post(rpcPath, async (ctx: Koa.Context) => {
   }
 
   try {
-    await encryptedReply(ctx, await dispatchRpc(request))
+    await encryptedReply(ctx, await dispatchRpc(request, {
+      baseUrl: getPublicBaseUrl(ctx),
+    }))
   }
   catch (error) {
     if (debugLogs) {

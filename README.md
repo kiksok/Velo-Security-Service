@@ -12,6 +12,8 @@ POST /assets/event
 
 The request and response bodies are AES-GCM encrypted envelopes. Public legacy routes, public status pages, plaintext forwarding, and custom encryption headers are not part of the hardened public interface.
 
+When the same gateway serves multiple frontend domains, Velo rewrites config `app_url` fields from the incoming request host or origin instead of hardcoding a single public domain.
+
 ## Security Defaults
 
 - `HARDENED_MODE=true`
@@ -44,6 +46,8 @@ ports:
 ## Frontend Integration
 
 Use `docs/velo-client.js` as the browser-side encrypted RPC helper. The frontend should call the single `RPC_PATH` endpoint with operation codes instead of embedding backend API paths.
+
+For multi-domain setups, each public domain can point its own `/assets/event` reverse proxy to the same Velo instance.
 
 Quick checkout operation codes:
 
