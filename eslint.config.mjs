@@ -9,6 +9,7 @@ export default antfu({
     '**/node_modules/**',
     'dist/',
     'dist/*',
+    'src/captchapng/**',
     '**/target/**',
     'packages/native',
   ],

@@ -1,5 +1,5 @@
 import chalk from 'chalk'
-import { adminApi, adminEmail, adminPassword, domain, panel, proxyConfig } from '../env'
+import { adminApi, adminEmail, adminPassword, debugLogs, domain, panel, proxyConfig } from '../env'
 
 interface Plan {
   id: number
@@ -64,7 +64,7 @@ export class BackendService {
         'Authorization': this.headerAuth!,
         ...init.headers,
       },
-      verbose: true,
+      verbose: debugLogs,
       ...proxyConfig,
     })
 
@@ -86,9 +86,11 @@ export class BackendService {
       }),
       headers: { 'Content-Type': 'application/json' },
     })
-    console.log('Admin User ===> ', user)
+    if (debugLogs) {
+      console.log('Admin login response received')
+    }
     this.headerAuth = user.data.auth_data
-    console.log(chalk.bgGreen('SUCCESS:'), 'AdminToken 初始化完成:', this.headerAuth)
+    console.log(chalk.bgGreen('SUCCESS:'), 'AdminToken 初始化完成')
   }
 
   async checkUser(email: string) {

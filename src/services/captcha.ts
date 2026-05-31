@@ -124,9 +124,3 @@ export function checkCaptcha(type: CaptchaType, data?: CaptchaCheckOptions) {
   console.log(chalk.bgGreen('SUCCESS:'), `${type}路由 =>  图形验证码校验通过`)
   return true
 }
-
-export const captchaUrlPath: { path: string, type: CaptchaType }[] = [
-  { path: '/api/v1/r8d/quick/order', type: 'quick' },
-  { path: '/api/v1/passport/auth/register', type: 'register' },
-  { path: '/api/v1/passport/auth/login', type: 'login' },
-]

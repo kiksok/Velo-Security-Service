@@ -1,120 +1,212 @@
 import type Koa from 'koa'
 import type { PlanPeriodKey } from './services/backend'
-import type { CaptchaType } from './types/captcha'
-import * as process from 'node:process'
+import type { CaptchaCheckOptions, CaptchaType } from './types/captcha'
 import KoaRouter from '@koa/router'
 import chalk from 'chalk'
+import { decryptEnvelope, encryptEnvelope } from './crypto'
 import {
   adminCreateUserEnabled,
   captchaKey,
   captchaLoginEnabled,
   captchaQuickOrderEnabled,
   captchaRegisterEnabled,
+  debugLogs,
   domain,
-  password,
   proxyConfig,
+  rpcPath,
+  rpcProxyEnabled,
   smtpNewUserSubject,
 } from './env'
 import { BackendService } from './services/backend'
-import { generateCaptchaData, generateCaptchaHash } from './services/captcha'
+import { checkCaptcha, generateCaptchaData, generateCaptchaHash } from './services/captcha'
 import { MailerService } from './services/mailer'
 import { renderHtml } from './utlis'
 
 export const router = new KoaRouter()
 
-// 自定义接口扩展
-/**
- * 获取服务状态，返回一个页面，告知用户加密通信、免登接口、邮件服务是否正常可用
- */
-router.get('/status', async (ctx: Koa.Context) => {
-  ctx.response.type = 'text/html'
-  ctx.response.status = 200
-  ctx.response.body = `
-    <html lang='zh'>
-      <head>
-        <title>服务状态 - AirBuddy Security</title>
-      </head>
-      <body>
-        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100vw; height: 100vh; gap: 4px;">
-          <h1>AirBuddy Security Service Status</h1>
-          <div>加密通信: ${domain && password ? '已启用' : '不可用'}</div>
-          <div>免登接口: ${BackendService.instance.headerAuth !== undefined ? '已启用' : '不可用'}</div>
-          <div>邮件服务: ${MailerService.instance.transport?.verify() ? '已启用' : '不可用'}</div>
-          <div>图形验证码: ${captchaKey ? '已配置' : '未配置'}</div>
-        </div>
-      </body>
-    </html>
-  `
-})
+interface RpcRequest {
+  op?: number | string
+  method?: string
+  path?: string
+  query?: Record<string, string | readonly string[]>
+  body?: unknown
+  data?: unknown
+  headers?: Record<string, string>
+  token?: string
+  captcha?: CaptchaCheckOptions
+}
 
-/**
- * 免登获取套餐列表
- */
-router.get('/api/v1/r8d/quick/plan', async (ctx: Koa.Context) => {
+interface BackendRoute {
+  method: string
+  path: string
+}
+
+interface BackendResult {
+  ok: boolean
+  status: number
+  contentType?: string
+  body: unknown
+}
+
+const backendRoutes: Record<string, BackendRoute> = {
+  1: { method: 'GET', path: '/api/v1/user/notice/fetch' },
+  2: { method: 'GET', path: '/api/v1/user/info' },
+  3: { method: 'GET', path: '/api/v1/user/comm/config' },
+  4: { method: 'GET', path: '/api/v1/guest/comm/config' },
+  5: { method: 'GET', path: '/api/v1/user/plan/fetch' },
+  6: { method: 'GET', path: '/api/v1/user/order/fetch' },
+  7: { method: 'GET', path: '/api/v1/user/order/detail' },
+  8: { method: 'GET', path: '/api/v1/user/server/fetch' },
+  9: { method: 'GET', path: '/api/v1/user/knowledge/fetch' },
+  10: { method: 'POST', path: '/api/v1/user/invite/save' },
+  11: { method: 'GET', path: '/api/v1/user/invite/fetch' },
+  12: { method: 'GET', path: '/api/v1/user/invite/details' },
+  13: { method: 'GET', path: '/api/v1/user/ticket/fetch' },
+  14: { method: 'GET', path: '/api/v1/bing/vip' },
+  15: { method: 'GET', path: '/api/v1/user/getSubscribe' },
+  16: { method: 'GET', path: '/api/v1/user/order/getPaymentMethod' },
+  17: { method: 'GET', path: '/api/v1/user/stat/getTrafficLog' },
+  18: { method: 'GET', path: '/api/v1/user/getStat' },
+  19: { method: 'POST', path: '/api/v1/user/resetSecurity' },
+  20: { method: 'POST', path: '/api/v1/user/coupon/check' },
+  21: { method: 'POST', path: '/api/v1/user/order/save' },
+  22: { method: 'POST', path: '/api/v1/user/order/checkout' },
+  23: { method: 'POST', path: '/api/v1/user/order/cancel' },
+  24: { method: 'POST', path: '/api/v1/user/update' },
+  25: { method: 'POST', path: '/api/v1/user/transfer' },
+  26: { method: 'POST', path: '/api/v1/user/ticket/withdraw' },
+  27: { method: 'POST', path: '/api/v1/user/redeemgiftcard' },
+  28: { method: 'POST', path: '/api/v1/user/ticket/save' },
+  29: { method: 'POST', path: '/api/v1/user/ticket/close' },
+  30: { method: 'POST', path: '/api/v1/user/ticket/reply' },
+  31: { method: 'POST', path: '/api/v1/passport/auth/login' },
+  32: { method: 'GET', path: '/api/v1/user/logout' },
+  33: { method: 'POST', path: '/api/v1/passport/auth/check' },
+  34: { method: 'POST', path: '/api/v1/passport/auth/register' },
+  35: { method: 'POST', path: '/api/v1/user/changePassword' },
+  36: { method: 'POST', path: '/api/v1/passport/auth/forget' },
+  37: { method: 'POST', path: '/api/v1/passport/comm/sendEmailVerify' },
+  38: { method: 'POST', path: '/api/v1/passport/auth/token2Login' },
+}
+
+function dataOf<T>(request: RpcRequest) {
+  return (request.data ?? request.body ?? {}) as T
+}
+
+function removeCaptcha(body: unknown) {
+  if (body && typeof body === 'object' && 'captcha' in body) {
+    delete (body as { captcha?: CaptchaCheckOptions }).captcha
+  }
+}
+
+function checkRouteCaptcha(type: CaptchaType, request: RpcRequest) {
+  const body = dataOf<{ captcha?: CaptchaCheckOptions }>(request)
+  const result = checkCaptcha(type, request.captcha || body.captcha)
+  if (result !== true) {
+    return {
+      ok: false,
+      status: 400,
+      body: {
+        code: result.code,
+        message: result.message,
+      },
+    } satisfies BackendResult
+  }
+  removeCaptcha(body)
+  request.data = body
+  request.body = body
+  return null
+}
+
+async function encryptedReply(ctx: Koa.Context, data: BackendResult) {
+  ctx.status = 200
+  ctx.type = 'application/octet-stream'
+  ctx.body = await encryptEnvelope(data)
+}
+
+function camouflage(ctx: Koa.Context) {
+  ctx.status = 404
+  ctx.body = ''
+}
+
+function parseMaybeJson(text: string, contentType: string) {
+  if (!text) {
+    return null
+  }
+  if (!contentType.includes('json')) {
+    return text
+  }
   try {
-    ctx.response.body = await BackendService.instance.getPlanList()
+    return JSON.parse(text)
   }
-  catch (e) {
-    console.error('getPlanList 500', e)
-    ctx.response.status = 500
-    ctx.response.body = {
-      code: 500,
-      message: '获取套餐列表失败',
-    }
+  catch {
+    return text
   }
-})
+}
 
-/**
- * 免登获取订单支持的付款方式
- */
-router.get('/api/v1/r8d/quick/payment', async (ctx: Koa.Context) => {
-  try {
-    ctx.response.body = await BackendService.instance.getOrderPayments()
-  }
-  catch (e) {
-    console.error('getOrderDetail 500', e)
-    ctx.response.status = 500
-    ctx.response.body = {
-      code: 500,
-      message: '获取订单支持方式失败',
-    }
-  }
-})
+function safeForwardHeaders(source?: Record<string, string>, token?: string) {
+  const headers = new Headers()
+  const blocked = new Set(['host', 'content-length', 'connection'])
 
-/**
- * 免登获取优惠券信息
- */
-router.post('/api/v1/r8d/quick/coupon', async (ctx: Koa.Context) => {
-  const data = ctx.request.body as { code: string, plan_id?: string, period?: PlanPeriodKey }
-  console.log('优惠券验证请求体:', data)
-  try {
-    ctx.response.body = await BackendService.instance.getCouponData(data)
-  }
-  catch (error) {
-    console.error('getCouponData 500', error)
-    ctx.response.status = 500
-    ctx.response.body = {
-      code: 500,
-      message: '获取优惠券信息失败',
+  for (const [key, value] of Object.entries(source || {})) {
+    const lower = key.toLowerCase()
+    if (!blocked.has(lower)) {
+      headers.set(key, value)
     }
   }
-})
 
-/**
- * 获取验证码
- */
-router.get('/api/v1/r8d/quick/captcha', async (ctx: Koa.Context) => {
-  const captchaKey = process.env.CAPTCHA_KEY
-  if (!captchaKey) {
-    ctx.response.status = 200
-    ctx.response.body = {
-      data: null,
-    }
-    return
+  if (token) {
+    headers.set('Authorization', token)
   }
-  const { type } = ctx.request.query as { type: CaptchaType }
-  // 根据类型检查是否启用验证码校验
-  let hasCheck: boolean
+  if (!headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  return headers
+}
+
+async function proxyToBackend(options: {
+  method: string
+  path: string
+  query?: Record<string, string | readonly string[]>
+  body?: unknown
+  headers?: Record<string, string>
+  token?: string
+}): Promise<BackendResult> {
+  const url = new URL(domain)
+  url.pathname = options.path
+  if (options.query) {
+    url.search = new URLSearchParams(options.query).toString()
+  }
+
+  const method = options.method.toUpperCase()
+  const init: RequestInit = {
+    method,
+    headers: safeForwardHeaders(options.headers, options.token),
+    ...proxyConfig,
+  }
+
+  if (method !== 'GET' && method !== 'HEAD' && options.body !== undefined) {
+    init.body = typeof options.body === 'string' ? options.body : JSON.stringify(options.body)
+  }
+
+  const response = await fetch(url, init)
+  const contentType = response.headers.get('content-type') || ''
+  const text = await response.text()
+
+  return {
+    ok: response.ok,
+    status: response.status,
+    contentType,
+    body: parseMaybeJson(text, contentType),
+  }
+}
+
+async function quickCaptcha(request: RpcRequest): Promise<BackendResult> {
+  const data = dataOf<{ type?: CaptchaType }>(request)
+  const type = data.type || 'quick'
+
+  let hasCheck = false
   switch (type) {
     case 'quick':
       hasCheck = captchaQuickOrderEnabled
@@ -125,163 +217,207 @@ router.get('/api/v1/r8d/quick/captcha', async (ctx: Koa.Context) => {
     case 'login':
       hasCheck = captchaLoginEnabled
       break
-    default:
-      hasCheck = false
-      break
   }
-  if (!hasCheck) {
-    ctx.response.status = 200
-    ctx.response.body = {
-      data: null,
-    }
-    return
+
+  if (!captchaKey || !hasCheck) {
+    return { ok: true, status: 200, body: { data: null } }
   }
-  // 生成验证码数据
-  try {
-    const timestamp = Date.now()
 
-    const { code, dataURL } = await generateCaptchaData()
-    const hash = generateCaptchaHash({
-      code,
-      type,
-      timestamp,
-      captchaKey,
-    })
+  const timestamp = Date.now()
+  const { code, dataURL } = await generateCaptchaData()
+  const hash = generateCaptchaHash({ code, type, timestamp, captchaKey })
 
-    ctx.response.body = {
+  return {
+    ok: true,
+    status: 200,
+    body: {
       data: dataURL,
       timestamp,
       hash,
-    }
+    },
   }
-  catch (e) {
-    console.error('getCaptcha 500', e)
-    ctx.response.status = 500
-    ctx.response.body = {
-      code: 500,
-      message: '获取验证码失败',
-    }
-  }
-})
+}
 
-/**
- * 创建免登订单
- */
-router.post('/api/v1/r8d/quick/order', async (ctx: Koa.Context) => {
-  const { email, password, planId, period, couponCode, inviteCode } = ctx.request.body as {
-    planId: string
-    period: PlanPeriodKey
+async function quickOrder(request: RpcRequest): Promise<BackendResult> {
+  const captchaError = checkRouteCaptcha('quick', request)
+  if (captchaError) {
+    return captchaError
+  }
+
+  const { email, password, planId, period, couponCode, inviteCode } = dataOf<{
     email: string
     password: string
+    planId: string
+    period: PlanPeriodKey
     couponCode?: string
     inviteCode?: string
-  }
+  }>(request)
 
-  // 检查优惠券参数，并计算优惠券类型和金额
   if (couponCode) {
-    const couponData = couponCode && await BackendService.instance.getCouponData({
+    const couponData = await BackendService.instance.getCouponData({
       code: couponCode,
       plan_id: planId.toString(),
       period,
     })
+
     if (!couponData || !couponData.data || !couponData.data.value) {
-      // eslint-disable-next-line ts/ban-ts-comment
-      // @ts-expect-error
-      const text = couponData.message || '优惠券无效'
-      console.error('优惠券验证错误信息:', text)
-      ctx.response.status = 500
-      ctx.response.body = {
-        code: 500,
-        message: text,
+      const message = (couponData as { message?: string } | undefined)?.message || '优惠券无效'
+      return {
+        ok: false,
+        status: 400,
+        body: {
+          code: 500,
+          message,
+        },
       }
-      return
     }
   }
 
-  // 检查用户是否已存在
   const checkUserExist = await BackendService.instance.checkUser(email)
   if (checkUserExist) {
-    console.error('用户已存在:', email)
-    ctx.response.status = 500
-    ctx.response.body = {
-      code: 500,
-      message: '用户已存在',
+    return {
+      ok: false,
+      status: 400,
+      body: {
+        code: 500,
+        message: '用户已存在',
+      },
     }
-    return
   }
 
-  // 创建用户
   const authToken = adminCreateUserEnabled
     ? await BackendService.instance.createUserForAdmin({ email, password })
     : await BackendService.instance.createUser({ email, password, invite_code: inviteCode })
-  console.log('createUser:', email, authToken)
 
-  // 创建订单
   const order = await BackendService.instance.createOrder({
     token: authToken,
     plan_id: planId,
     period,
     coupon_code: couponCode,
   })
-  console.log('createOrder:', email, order)
 
-  // 发送新用户邮件
   const template = MailerService.instance.newUserTemplate
     ? {
         html: renderHtml(MailerService.instance.newUserTemplate, { email, password }),
       }
     : {
-        text: `${smtpNewUserSubject}！\n\n您的账号信息：\n邮箱: ${email}\n密码: ${password}\n\n请妥善保管您的账号信息。`,
+        text: `${smtpNewUserSubject}\n\n账号信息:\n邮箱: ${email}\n密码: ${password}`,
       }
-  MailerService.instance.sendMail(email, smtpNewUserSubject || '通知', template).then(() => {
-    console.log(chalk.bgGreen('SUCCESS:'), '发送新用户邮件成功:', email)
-  }).catch((err) => {
-    console.error(chalk.bgRed('ERROR:'), '发送新用户邮件失败:', email, err)
-  })
-
-  ctx.response.status = 200
-  ctx.response.body = {
-    authToken,
-    orderId: order,
-  }
-})
-
-// proxy
-router.all('/api/v1/:segments*', async (ctx: Koa.Context) => {
-  const headers = new Headers(ctx.request.headers as Record<string, string>)
-
-  // 移除问题头
-  const removeHeaders = [
-    'x-salt',
-    'content-length',
-    'x-origin-content-type',
-    'host',
-  ]
-  removeHeaders.forEach(h => headers.delete(h))
-
-  // 代理请求解析
-  const url = new URL(domain as string)
-  const { query, path, body, rawBody } = ctx.request
-  query && (url.search = new URLSearchParams(query as Record<string, string | readonly string[]>).toString())
-  url.pathname = path
-  console.log('代理转发请求:', `${ctx.method} ${url.toString()}`, 'path:', path, 'body:', body, 'rawBody:', rawBody)
-
-  // 代理请求转发
-  const response = await fetch(url, {
-    method: ctx.method,
-    headers,
-    body: JSON.stringify(body),
-    verbose: false, // 调试用，输出详细日志
-    ...proxyConfig,
-  })
-
-  ctx.response.status = response.status
-  ctx.response.body = await response.text()
-
-  const omitHeaders = ['vary', 'transfer-encoding', 'content-length', 'content-encoding']
-  for (const [key, value] of response.headers.entries()) {
-    if (!omitHeaders.includes(key)) {
-      ctx.response.set(key, value)
+  MailerService.instance.sendMail(email, smtpNewUserSubject || '通知', template).catch((err) => {
+    if (debugLogs) {
+      console.error(chalk.bgRed('ERROR:'), 'send new-user mail failed:', err)
     }
+  })
+
+  return {
+    ok: true,
+    status: 200,
+    body: {
+      authToken,
+      orderId: order,
+    },
+  }
+}
+
+async function dispatchRpc(request: RpcRequest): Promise<BackendResult> {
+  const op = String(request.op ?? '')
+
+  switch (op) {
+    case 'quick.plan':
+    case '201':
+      return { ok: true, status: 200, body: await BackendService.instance.getPlanList() }
+    case 'quick.payment':
+    case '202':
+      return { ok: true, status: 200, body: await BackendService.instance.getOrderPayments() }
+    case 'quick.coupon':
+    case '203':
+      return { ok: true, status: 200, body: await BackendService.instance.getCouponData(dataOf(request)) }
+    case 'quick.captcha':
+    case '204':
+      return quickCaptcha(request)
+    case 'quick.order':
+    case '205':
+      return quickOrder(request)
+  }
+
+  const route = backendRoutes[op]
+  if (route) {
+    if (route.path === '/api/v1/passport/auth/login') {
+      const captchaError = checkRouteCaptcha('login', request)
+      if (captchaError) {
+        return captchaError
+      }
+    }
+    if (route.path === '/api/v1/passport/auth/register') {
+      const captchaError = checkRouteCaptcha('register', request)
+      if (captchaError) {
+        return captchaError
+      }
+    }
+
+    return proxyToBackend({
+      method: request.method || route.method,
+      path: route.path,
+      query: request.query,
+      body: dataOf(request),
+      headers: request.headers,
+      token: request.token,
+    })
+  }
+
+  if (rpcProxyEnabled && request.path) {
+    return proxyToBackend({
+      method: request.method || 'GET',
+      path: request.path,
+      query: request.query,
+      body: request.body ?? request.data,
+      headers: request.headers,
+      token: request.token,
+    })
+  }
+
+  return {
+    ok: false,
+    status: 404,
+    body: {
+      message: 'Not found',
+    },
+  }
+}
+
+router.post(rpcPath, async (ctx: Koa.Context) => {
+  let request: RpcRequest | null = null
+
+  try {
+    const rawBody = typeof ctx.request.body === 'string' ? ctx.request.body : ctx.request.rawBody
+    if (!rawBody) {
+      camouflage(ctx)
+      return
+    }
+
+    request = JSON.parse(await decryptEnvelope(rawBody)) as RpcRequest
+  }
+  catch (error) {
+    if (debugLogs) {
+      console.error('RPC envelope rejected:', error)
+    }
+    camouflage(ctx)
+    return
+  }
+
+  try {
+    await encryptedReply(ctx, await dispatchRpc(request))
+  }
+  catch (error) {
+    if (debugLogs) {
+      console.error('RPC dispatch failed:', error)
+    }
+    await encryptedReply(ctx, {
+      ok: false,
+      status: 500,
+      body: {
+        message: 'Request failed',
+      },
+    })
   }
 })

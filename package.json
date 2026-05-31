@@ -1,7 +1,7 @@
 {
-  "name": "airbuddy-security",
+  "name": "velo-security-service",
   "type": "module",
-  "version": "1.1.1",
+  "version": "0.1.0",
   "private": true,
   "packageManager": "yarn@1.22.22",
   "module": "./dist/index.js",
@@ -10,7 +10,9 @@
     "start": "bun run ./dist/index.js",
     "build:bun": "bun build ./src/index.ts --target=bun --outdir dist",
     "build:node": "bun build ./src/index.ts --target=node --outdir dist",
-    "build:executable": "bun build ./src/index.ts --compile --minify --sourcemap --target=bun-linux-x64-modern --outfile dist/airbuddy-security-executable --static"
+    "build:executable": "bun build ./src/index.ts --compile --minify --sourcemap --target=bun-linux-x64-modern --outfile dist/velo-security-service --static",
+    "lint": "eslint src --max-warnings=0",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@antfu/eslint-config": "^3.9.2",
