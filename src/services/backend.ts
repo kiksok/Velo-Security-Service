@@ -39,13 +39,13 @@ export class BackendService {
   headerAuth: string | undefined
 
   private constructor() {
-    if (!adminApi || !adminEmail || !adminPassword) {
-      console.warn(chalk.bgYellow('WARNING:'), '无法使用免登接口，请设置环境变量 ADMIN_API_PREFIX, ADMIN_EMAIL 和 ADMIN_PASSWORD')
-      return
-    }
     this.panel = panel || 'v2b'
     this.origin = domain
     this.apiPrefix = adminApi
+
+    if (!adminApi || !adminEmail || !adminPassword) {
+      console.warn(chalk.bgYellow('WARNING:'), '无法使用免登接口，请设置环境变量 ADMIN_API_PREFIX, ADMIN_EMAIL 和 ADMIN_PASSWORD')
+    }
   }
 
   adminApi(api: string) {
@@ -61,7 +61,7 @@ export class BackendService {
       ...init,
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': this.headerAuth!,
+        ...(this.headerAuth ? { Authorization: this.headerAuth } : {}),
         ...init.headers,
       },
       verbose: debugLogs,
