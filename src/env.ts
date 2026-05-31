@@ -26,6 +26,7 @@ export const captchaLoginEnabled = process.env.CAPTCHA_LOGIN_ENABLED === 'true'
 export const hardenedMode = process.env.HARDENED_MODE !== 'false'
 export const rpcProxyEnabled = process.env.RPC_PROXY_ENABLED === 'true'
 export const debugLogs = process.env.DEBUG_LOGS === 'true'
+export const forceDisableRecaptcha = process.env.FORCE_DISABLE_RECAPTCHA !== 'false'
 
 function normalizePath(path: string) {
   return path.startsWith('/') ? path : `/${path}`

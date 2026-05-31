@@ -12,6 +12,7 @@ import {
   captchaRegisterEnabled,
   debugLogs,
   domain,
+  forceDisableRecaptcha,
   proxyConfig,
   rpcPath,
   rpcProxyEnabled,
@@ -192,6 +193,27 @@ function rewriteAppUrl(body: unknown, publicBaseUrl?: string) {
     data: {
       ...(data as Record<string, unknown>),
       app_url: publicBaseUrl,
+    },
+  }
+}
+
+function rewritePublicConfig(body: unknown, publicBaseUrl?: string) {
+  const rewritten = rewriteAppUrl(body, publicBaseUrl)
+  if (!forceDisableRecaptcha || !rewritten || typeof rewritten !== 'object' || !('data' in rewritten)) {
+    return rewritten
+  }
+
+  const data = (rewritten as { data?: unknown }).data
+  if (!data || typeof data !== 'object') {
+    return rewritten
+  }
+
+  return {
+    ...(rewritten as Record<string, unknown>),
+    data: {
+      ...(data as Record<string, unknown>),
+      is_recaptcha: 0,
+      recaptcha_site_key: '',
     },
   }
 }
@@ -419,7 +441,7 @@ async function dispatchRpc(request: RpcRequest, meta: PublicRequestMeta): Promis
     if (op === '3' || op === '4') {
       return {
         ...result,
-        body: rewriteAppUrl(result.body, meta.baseUrl),
+        body: rewritePublicConfig(result.body, meta.baseUrl),
       }
     }
 
