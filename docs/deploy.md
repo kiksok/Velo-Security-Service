@@ -6,6 +6,8 @@
 4. Keep `LEGACY_ROUTES_ENABLED=false` and `PUBLIC_STATUS_ENABLED=false` in production.
 5. Put the same `SEC_PASSWORD` in the service and the frontend RPC client.
 
+The direct `docker run` guide is in `docs/docker-run.md`.
+
 Minimal reverse proxy idea:
 
 ```txt

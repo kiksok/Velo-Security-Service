@@ -34,7 +34,7 @@ bun run build:bun
 bun run start
 ```
 
-For Docker-style deployments, keep the service bound to localhost and publish it through your web server/CDN layer:
+For Docker deployments, see `docs/docker-run.md`. Keep the service bound to localhost and publish it through your web server/CDN layer:
 
 ```yaml
 ports:
