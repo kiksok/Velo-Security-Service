@@ -97,6 +97,7 @@ jobs:
               --name velo-security-service \
               --restart always \
               --env-file .env \
+              --add-host=host.docker.internal:host-gateway \
               -p 127.0.0.1:12020:3000 \
               "$IMAGE_SHA_REF"
 
@@ -113,6 +114,7 @@ jobs:
                   --name velo-security-service \
                   --restart always \
                   --env-file .env \
+                  --add-host=host.docker.internal:host-gateway \
                   -p 127.0.0.1:12020:3000 \
                   "$PREVIOUS_IMAGE"
               fi

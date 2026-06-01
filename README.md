@@ -72,6 +72,11 @@ The server keeps its runtime secrets in `/www/wwwroot/velo-security-service/.env
 The workflow does not overwrite that file. It only pulls a new image and recreates
 the `velo-security-service` container.
 
+If `.env` uses `BACKEND_DOMAIN=http://host.docker.internal:...` on a Linux host,
+the container must be started with:
+
+`--add-host=host.docker.internal:host-gateway`
+
 Quick checkout operation codes:
 
 ```txt
