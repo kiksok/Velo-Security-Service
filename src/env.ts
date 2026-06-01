@@ -38,6 +38,12 @@ export const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
   .map(origin => origin.trim())
   .filter(Boolean)
 
+export const studioConfigRoot = process.env.STUDIO_CONFIG_ROOT || ''
+export const studioAllowedEmails = (process.env.STUDIO_ALLOWED_EMAILS || '')
+  .split(',')
+  .map(email => email.trim().toLowerCase())
+  .filter(Boolean)
+
 export const proxyConfig = process.env.PROXY_URL
   ? { proxy: process.env.PROXY_URL }
   : {}

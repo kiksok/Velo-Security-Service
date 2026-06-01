@@ -1,6 +1,8 @@
 import type Koa from 'koa'
 import type { PlanPeriodKey } from './services/backend'
 import type { CaptchaCheckOptions, CaptchaType } from './types/captcha'
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import KoaRouter from '@koa/router'
 import chalk from 'chalk'
 import { decryptEnvelope, encryptEnvelope } from './crypto'
@@ -16,6 +18,8 @@ import {
   proxyConfig,
   rpcPath,
   rpcProxyEnabled,
+  studioAllowedEmails,
+  studioConfigRoot,
   smtpNewUserSubject,
 } from './env'
 import { BackendService } from './services/backend'
@@ -51,6 +55,11 @@ interface BackendResult {
 
 interface PublicRequestMeta {
   baseUrl?: string
+}
+
+interface StudioWritePayload {
+  config?: string
+  locale?: string
 }
 
 const backendRoutes: Record<string, BackendRoute> = {
@@ -191,6 +200,18 @@ function parseMaybeJson(text: string, contentType: string) {
   }
 }
 
+function getStudioPaths() {
+  if (!studioConfigRoot) {
+    return null
+  }
+
+  return {
+    configPath: join(studioConfigRoot, 'config.js'),
+    localePath: join(studioConfigRoot, 'locales', 'zh-CN.json'),
+    localeMirrorPath: join(studioConfigRoot, 'assets', 'BwgpI1-f.json'),
+  }
+}
+
 function getPublicBaseUrl(ctx: Koa.Context) {
   const origin = ctx.get('Origin')
   if (origin) {
@@ -316,6 +337,92 @@ async function proxyToBackend(options: {
     contentType,
     body: parseMaybeJson(text, contentType),
   }
+}
+
+async function getUserEmailByToken(token?: string) {
+  if (!token) {
+    return null
+  }
+
+  const result = await proxyToBackend({
+    method: 'GET',
+    path: '/api/v1/user/info',
+    token,
+  })
+
+  if (!result.ok || !result.body || typeof result.body !== 'object') {
+    return null
+  }
+
+  const body = result.body as {
+    data?: { email?: unknown }
+    email?: unknown
+  }
+
+  const email = body.data?.email || body.email
+  return typeof email === 'string' ? email.toLowerCase() : null
+}
+
+async function backupAndWriteFile(path: string, content: string) {
+  await mkdir(dirname(path), { recursive: true })
+  const backupPath = `${path}.bak-${Date.now()}`
+
+  try {
+    await copyFile(path, backupPath)
+  }
+  catch {}
+
+  await writeFile(path, content, 'utf8')
+}
+
+async function writeStudioFiles(data: StudioWritePayload) {
+  const paths = getStudioPaths()
+  if (!paths) {
+    return {
+      ok: false,
+      status: 500,
+      body: {
+        message: 'Studio root is not configured',
+      },
+    } satisfies BackendResult
+  }
+
+  const { config = '', locale = '' } = data
+  if (!config.startsWith('window.CONFIG = ')) {
+    return {
+      ok: false,
+      status: 400,
+      body: {
+        message: 'Invalid config payload',
+      },
+    } satisfies BackendResult
+  }
+
+  try {
+    JSON.parse(locale)
+  }
+  catch {
+    return {
+      ok: false,
+      status: 400,
+      body: {
+        message: 'Invalid locale payload',
+      },
+    } satisfies BackendResult
+  }
+
+  await backupAndWriteFile(paths.configPath, config)
+  await backupAndWriteFile(paths.localePath, locale)
+  await backupAndWriteFile(paths.localeMirrorPath, locale)
+
+  return {
+    ok: true,
+    status: 200,
+    body: {
+      savedAt: Date.now(),
+      files: ['config.js', 'locales/zh-CN.json', 'assets/BwgpI1-f.json'],
+    },
+  } satisfies BackendResult
 }
 
 async function quickCaptcha(request: RpcRequest): Promise<BackendResult> {
@@ -454,6 +561,30 @@ async function dispatchRpc(request: RpcRequest, meta: PublicRequestMeta): Promis
     case 'quick.order':
     case '205':
       return quickOrder(request)
+    case 'studio.write': {
+      if (!studioAllowedEmails.length) {
+        return {
+          ok: false,
+          status: 403,
+          body: {
+            message: 'Studio save is not enabled',
+          },
+        }
+      }
+
+      const email = await getUserEmailByToken(request.token)
+      if (!email || !studioAllowedEmails.includes(email)) {
+        return {
+          ok: false,
+          status: 403,
+          body: {
+            message: 'Studio save is not allowed for this account',
+          },
+        }
+      }
+
+      return writeStudioFiles(dataOf<StudioWritePayload>(request))
+    }
   }
 
   const route = backendRoutes[op]

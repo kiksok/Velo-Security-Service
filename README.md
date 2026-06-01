@@ -77,6 +77,18 @@ the container must be started with:
 
 `--add-host=host.docker.internal:host-gateway`
 
+For Site Studio online save, set these environment variables in `.env`:
+
+- `STUDIO_CONFIG_ROOT=/data/velo-test`
+- `STUDIO_ALLOWED_EMAILS=admin@example.com`
+
+The deploy workflow mounts:
+
+`/www/wwwroot/velo-test:/data/velo-test`
+
+Only accounts whose email is listed in `STUDIO_ALLOWED_EMAILS` can save config
+and locale files online.
+
 Quick checkout operation codes:
 
 ```txt

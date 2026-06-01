@@ -98,6 +98,7 @@ jobs:
               --restart always \
               --env-file .env \
               --add-host=host.docker.internal:host-gateway \
+              -v /www/wwwroot/velo-test:/data/velo-test \
               -p 127.0.0.1:12020:3000 \
               "$IMAGE_SHA_REF"
 
@@ -115,6 +116,7 @@ jobs:
                   --restart always \
                   --env-file .env \
                   --add-host=host.docker.internal:host-gateway \
+                  -v /www/wwwroot/velo-test:/data/velo-test \
                   -p 127.0.0.1:12020:3000 \
                   "$PREVIOUS_IMAGE"
               fi
