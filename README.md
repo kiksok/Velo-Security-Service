@@ -49,6 +49,29 @@ Use `docs/velo-client.js` as the browser-side encrypted RPC helper. The frontend
 
 For multi-domain setups, each public domain can point its own `/assets/event` reverse proxy to the same Velo instance.
 
+## GitHub Actions deployment
+
+This repository can be deployed with the following flow:
+
+`commit -> push -> GitHub Actions -> GHCR -> server pull + restart`
+
+The workflow file is:
+
+`/.github/workflows/deploy.yml`
+
+Required GitHub secrets:
+
+- `DEPLOY_HOST`
+- `DEPLOY_PORT`
+- `DEPLOY_USER`
+- `DEPLOY_PASSWORD`
+- `GHCR_USERNAME`
+- `GHCR_TOKEN`
+
+The server keeps its runtime secrets in `/www/wwwroot/velo-security-service/.env`.
+The workflow does not overwrite that file. It only pulls a new image and recreates
+the `velo-security-service` container.
+
 Quick checkout operation codes:
 
 ```txt

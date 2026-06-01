@@ -1,0 +1,123 @@
+name: Build And Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/velo-security-service
+
+jobs:
+  build-and-push:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_ref: ${{ steps.meta.outputs.image_ref }}
+      image_sha_ref: ${{ steps.meta.outputs.image_sha_ref }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.11
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        shell: bash
+        run: |
+          IMAGE_REF="${REGISTRY,,}/${IMAGE_NAME,,}:latest"
+          IMAGE_SHA_REF="${REGISTRY,,}/${IMAGE_NAME,,}:${GITHUB_SHA}"
+          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+          echo "image_sha_ref=${IMAGE_SHA_REF}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.meta.outputs.image_ref }}
+            ${{ steps.meta.outputs.image_sha_ref }}
+
+  deploy:
+    if: github.actor == github.repository_owner
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          IMAGE_REF: ${{ needs.build-and-push.outputs.image_ref }}
+          IMAGE_SHA_REF: ${{ needs.build-and-push.outputs.image_sha_ref }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          username: ${{ secrets.DEPLOY_USER }}
+          password: ${{ secrets.DEPLOY_PASSWORD }}
+          envs: IMAGE_REF,IMAGE_SHA_REF,GHCR_USERNAME,GHCR_TOKEN
+          script_stop: true
+          script: |
+            set -eu
+            cd /www/wwwroot/velo-security-service
+
+            PREVIOUS_IMAGE="$(docker inspect velo-security-service --format '{{.Config.Image}}' 2>/dev/null || true)"
+
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+            docker pull "$IMAGE_SHA_REF"
+
+            docker rm -f velo-security-service >/dev/null 2>&1 || true
+            docker run -d \
+              --name velo-security-service \
+              --restart always \
+              --env-file .env \
+              -p 127.0.0.1:12020:3000 \
+              "$IMAGE_SHA_REF"
+
+            sleep 5
+            HTTP_CODE="$(curl -s -o /tmp/velo-health.txt -w '%{http_code}' http://127.0.0.1:12020/assets/event || true)"
+
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "New container healthcheck failed with status: $HTTP_CODE"
+              docker logs --tail 200 velo-security-service || true
+              docker rm -f velo-security-service >/dev/null 2>&1 || true
+
+              if [ -n "$PREVIOUS_IMAGE" ]; then
+                docker run -d \
+                  --name velo-security-service \
+                  --restart always \
+                  --env-file .env \
+                  -p 127.0.0.1:12020:3000 \
+                  "$PREVIOUS_IMAGE"
+              fi
+
+              exit 1
+            fi
+
+            docker image prune -f >/dev/null 2>&1 || true

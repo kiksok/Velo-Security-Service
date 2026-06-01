@@ -129,6 +129,48 @@ async function encryptedReply(ctx: Koa.Context, data: BackendResult) {
   ctx.body = await encryptEnvelope(data)
 }
 
+function toBase64Url(data: string) {
+  return Buffer.from(data)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '')
+}
+
+function fromBase64Url(value: string) {
+  const normalized = value.trim().replace(/-/g, '+').replace(/_/g, '/')
+  const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - normalized.length % 4)
+  return Buffer.from(`${normalized}${padding}`, 'base64').toString()
+}
+
+function compactReply(ctx: Koa.Context, data: BackendResult) {
+  ctx.status = 200
+  ctx.type = 'text/plain; charset=utf-8'
+  ctx.body = toBase64Url(JSON.stringify(data))
+}
+
+function expandCompactRequest(data: Record<string, unknown>): RpcRequest {
+  return {
+    op: data.o as RpcRequest['op'],
+    method: data.m as RpcRequest['method'],
+    query: data.q as RpcRequest['query'],
+    data: data.d,
+    path: data.p as RpcRequest['path'],
+    headers: data.h as RpcRequest['headers'],
+    token: data.t as RpcRequest['token'],
+    captcha: data.c as RpcRequest['captcha'],
+  }
+}
+
+function parseCompactEnvelope(rawBody: string) {
+  const data = JSON.parse(fromBase64Url(rawBody))
+  if (!data || typeof data !== 'object' || !('o' in data)) {
+    return null
+  }
+
+  return expandCompactRequest(data as Record<string, unknown>)
+}
+
 function camouflage(ctx: Koa.Context) {
   ctx.status = 404
   ctx.body = ''
@@ -470,6 +512,7 @@ async function dispatchRpc(request: RpcRequest, meta: PublicRequestMeta): Promis
 
 router.post(rpcPath, async (ctx: Koa.Context) => {
   let request: RpcRequest | null = null
+  let compactMode = false
 
   try {
     const rawBody = typeof ctx.request.body === 'string' ? ctx.request.body : ctx.request.rawBody
@@ -478,7 +521,15 @@ router.post(rpcPath, async (ctx: Koa.Context) => {
       return
     }
 
-    request = JSON.parse(await decryptEnvelope(rawBody)) as RpcRequest
+    try {
+      request = parseCompactEnvelope(rawBody)
+      compactMode = !!request
+    }
+    catch {}
+
+    if (!request) {
+      request = JSON.parse(await decryptEnvelope(rawBody)) as RpcRequest
+    }
   }
   catch (error) {
     if (debugLogs) {
@@ -489,20 +540,34 @@ router.post(rpcPath, async (ctx: Koa.Context) => {
   }
 
   try {
-    await encryptedReply(ctx, await dispatchRpc(request, {
+    const result = await dispatchRpc(request, {
       baseUrl: getPublicBaseUrl(ctx),
-    }))
+    })
+
+    if (compactMode) {
+      compactReply(ctx, result)
+    }
+    else {
+      await encryptedReply(ctx, result)
+    }
   }
   catch (error) {
     if (debugLogs) {
       console.error('RPC dispatch failed:', error)
     }
-    await encryptedReply(ctx, {
+    const result = {
       ok: false,
       status: 500,
       body: {
         message: 'Request failed',
       },
-    })
+    }
+
+    if (compactMode) {
+      compactReply(ctx, result)
+    }
+    else {
+      await encryptedReply(ctx, result)
+    }
   }
 })
